@@ -83,11 +83,11 @@ For every pixel, the head predicts a text probability map $$P$$, an adaptive
 threshold map $$T$$, and an approximate binary map. Differentiable binarization
 uses:
 
-$$\widehat{B}_{ij}=\frac{1}{1+\exp\left[-k\left(P_{ij}-T_{ij}\right)\right]}.$$
+$$\widehat{B}{ij}=\frac{1}{1+\exp\left[-k\left(P{ij}-T_{ij}\right)\right]}.$$
 
 The configured DB objective is:
 
-$$\mathcal{L}_{DB} =\alpha**\mathcal**{L}_{shrink} +\beta**\mathcal**{L}_{threshold} +\mathcal{L}_{binary}, \qquad \alpha=5,\;\beta=10.$$
+$$\mathcal{L}{DB} =\alpha\mathcal{L}{shrink} +\beta\mathcal{L}{threshold} +\mathcal{L}{binary}, \qquad \alpha=5,;\beta=10.$$
 
 `DBLoss` uses balanced Dice loss with online hard-example mining for the shrink
 map, masked L1 loss for the threshold map, and Dice loss for the binary map.
@@ -110,15 +110,15 @@ MobileNetV1Enhance ×0.5 -> SVTR neck -> MultiHead(CTC + SAR)
 The CTC branch marginalizes all valid frame-to-label alignments. If
 $$\mathcal{B}(\pi)=y$$ collapses alignment $$\pi$$ to target $$y$$, then:
 
-$$\mathcal{L}_{CTC} =-\frac{1}{N}\sum_{n=1}^{N} \log\left( \sum_{\pi:\mathcal{B}(\pi)=y_n} \prod_{t=1}^{T}p(\pi_t\mid x_n) \right).$$
+$$\mathcal{L}{CTC} =-\frac{1}{N}\sum{n=1}^{N} \log\left( \sum_{\pi:\mathcal{B}(\pi)=y_n} \prod_{t=1}^{T}p(\pi_t\mid x_n) \right).$$
 
 The SAR branch uses autoregressive cross-entropy:
 
-$$\mathcal{L}_{SAR} =-\frac{1}{M}\sum_{n,t} \log p\left(y_{n,t}\mid y_{n,<t},x_n\right).$$
+$$\mathcal{L}{SAR} =-\frac{1}{M}\sum{n,t} \log p\left(y_{n,t}\mid y_{n,<t},x_n\right).$$
 
 The default `MultiLoss` weights are both one:
 
-$$\mathcal{L}_{rec}=\mathcal{L}_{CTC}+\mathcal{L}_{SAR}.$$
+$$\mathcal{L}{rec}=\mathcal{L}{CTC}+\mathcal{L}_{SAR}.$$
 
 Deployment decodes the CTC head. Validation reports exact sequence accuracy
 and normalized edit similarity.
@@ -135,13 +135,13 @@ Images are resized with preserved aspect ratio, padded to `488 × 488`, and
 decoded autoregressively up to 500 structure tokens. The loss combines token
 cross-entropy and masked Smooth L1 localization:
 
-$$\mathcal{L}_{SLA} =\lambda_s**\mathcal**{L}_{structure} +\lambda_l**\mathcal**{L}_{location}, \qquad \lambda_s=1,\;\lambda_l=2.$$
+$$\mathcal{L}{SLA} =\lambda_s\mathcal{L}{structure} +\lambda_l\mathcal{L}_{location}, \qquad \lambda_s=1,;\lambda_l=2.$$
 
-$$\mathcal{L}_{structure} =-\frac{1}{N}\sum_{n,t}\log p(y_{n,t}\mid y_{n,<t},x_n).$$
+$$\mathcal{L}{structure} =-\frac{1}{N}\sum{n,t}\log p(y_{n,t}\mid y_{n,<t},x_n).$$
 
 For masked coordinate errors $$d$$:
 
-$$\operatorname{SmoothL1}(d)= \begin{cases} \tfrac{1}{2}d^2, & |d|<1,\\ |d|-\tfrac{1}{2}, & |d|\ge 1. \end{cases}$$
+$$\mathrm{SmoothL1}(d)= \begin{cases} \frac{1}{2}d^2, & |d|<1,\ |d|-\frac{1}{2}, & |d|\ge 1. \end{cases}$$
 
 The implementation normalizes the summed localization loss by the number of
 valid coordinate elements.
@@ -150,19 +150,19 @@ valid coordinate elements.
 
 Exact table accuracy is intentionally strict:
 
-$$\operatorname{Acc}_{exact} =\frac{1}{N}\sum_{n=1}^{N} \mathbf{1}[\widehat{s}_n=s_n].$$
+$$\mathrm{Acc}{exact} =\frac{1}{N}\sum{n=1}^{N} \mathbf{1}[\widehat{s}_n=s_n].$$
 
 Normalized token edit similarity for one table is:
 
-$$\operatorname{NED}(\widehat{s},s) =1-\frac{D_{lev}(\widehat{s},s)} {\max(|\widehat{s}|,|s|,1)}.$$
+$$\mathrm{NED}(\widehat{s},s) =1-\frac{D_{lev}(\widehat{s},s)} {\max(|\widehat{s}|,|s|,1)}.$$
 
 TEDS-Structure compares HTML trees while ignoring cell text:
 
-$$\operatorname{TEDS**\text**{-}S}(T_a,T_b) =1-\frac{\operatorname{EditDist}(T_a,T_b)} {\max(|T_a|,|T_b|)}.$$
+$$\mathrm{TEDS-S}(T_a,T_b) =1-\frac{\mathrm{EditDist}(T_a,T_b)} {\max(|T_a|,|T_b|)}.$$
 
 The primary checkpoint score is:
 
-$$S_{structure} =0.2A_{token} +0.2**\overline**{\operatorname{NED}} +0.4**\overline**{\operatorname{TEDS**\text**{-}S}} +0.2R_{valid\_html}.$$
+$$S_{structure} =0.2A_{token} +0.2\overline{\mathrm{NED}} +0.4\overline{\mathrm{TEDS-S}} +0.2R_{\mathrm{valid_html}}.$$
 
 This score favors correct topology and valid HTML without requiring every token
 in a long table to be exact. The selected checkpoint prefix is
