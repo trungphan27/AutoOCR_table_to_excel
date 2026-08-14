@@ -16,7 +16,7 @@ text with cells, and exports both HTML and Excel.
 - Safe mid-epoch checkpoints and resumable training.
 - Live `tqdm` metrics for training and validation.
 - Structure-aware SLANet checkpoint selection using token similarity, edit
-  similarity, TEDS-Structure, and valid HTML rate.
+  similarity, TEDS-Structure, and valid HTML rate.
 - ONNX Runtime inference with FP32/FP16 model validation.
 - FastAPI, Gradio, Docker CPU, Docker GPU, and hybrid CPU/GPU profiles.
 - Excel generation with `rowspan` and `colspan` preservation.
@@ -25,17 +25,17 @@ text with cells, and exports both HTML and Excel.
 
 ```mermaid
 flowchart LR
-    A[Table image] --> B[Image validation and normalization]
-    B --> C[DB text detector]
-    C --> D[Text boxes and cell crops]
-    D --> E[SVTR_LCNet recognizer]
-    E --> F[Text strings and confidence]
-    B --> G[SLANet structure model]
-    G --> H[HTML tokens and cell boxes]
-    F --> I[Coordinate-based table matching]
-    H --> I
-    I --> J[Structured HTML]
-    J --> K[Excel workbook]
+    A[Table image] --> B[Image validation and normalization]
+    B --> C[DB text detector]
+    C --> D[Text boxes and cell crops]
+    D --> E[SVTR_LCNet recognizer]
+    E --> F[Text strings and confidence]
+    B --> G[SLANet structure model]
+    G --> H[HTML tokens and cell boxes]
+    F --> I[Coordinate-based table matching]
+    H --> I
+    I --> J[Structured HTML]
+    J --> K[Excel workbook]
 ```
 
 The detector/recognizer branch and the structure branch process the same image.
@@ -66,10 +66,10 @@ For each PubTabNet record:
 2. Convert each non-empty cell bounding box to a DB quadrilateral annotation.
 3. Crop the cell with configurable padding for recognition training.
 4. Preserve inline markup such as `<b>`, `<i>`, `<sup>`, and `<sub>` in the
-   recognition label.
+   recognition label.
 5. Keep the original JSONL record unchanged for SLANet.
 6. Write derived label files atomically so an interrupted run cannot replace a
-   valid label set with a partial one.
+   valid label set with a partial one.
 
 ## Model 1: DB text detector
 
@@ -79,23 +79,15 @@ The detector is a segmentation-based Differentiable Binarization model:
 MobileNetV3-large ×0.5 -> RSEFPN(96) -> DBHead
 ```
 
-For every pixel, the head predicts a text probability map $P$, an adaptive
-threshold map $T$, and an approximate binary map. Differentiable binarization
+For every pixel, the head predicts a text probability map $$P$$, an adaptive
+threshold map $$T$$, and an approximate binary map. Differentiable binarization
 uses:
 
-```math
-\widehat{B}_{ij}=\frac{1}{1+\exp\left[-k\left(P_{ij}-T_{ij}\right)\right]}.
-```
+$$\widehat{B}_{ij}=\frac{1}{1+\exp\left[-k\left(P_{ij}-T_{ij}\right)\right]}.$$
 
 The configured DB objective is:
 
-```math
-\mathcal{L}_{DB}
-=\alpha\mathcal{L}_{shrink}
-+\beta\mathcal{L}_{threshold}
-+\mathcal{L}_{binary},
-\qquad \alpha=5,\;\beta=10.
-```
+$$\mathcal{L}_{DB} =\alpha**\mathcal**{L}_{shrink} +\beta**\mathcal**{L}_{threshold} +\mathcal{L}_{binary}, \qquad \alpha=5,\;\beta=10.$$
 
 `DBLoss` uses balanced Dice loss with online hard-example mining for the shrink
 map, masked L1 loss for the threshold map, and Dice loss for the binary map.
@@ -103,13 +95,9 @@ The OHEM negative-to-positive ratio is `3`.
 
 Detector validation reports precision, recall, and harmonic mean:
 
-```math
-P=\frac{TP}{TP+FP},\qquad
-R=\frac{TP}{TP+FN},\qquad
-H=\frac{2PR}{P+R}.
-```
+$$P=\frac{TP}{TP+FP},\qquad R=\frac{TP}{TP+FN},\qquad H=\frac{2PR}{P+R}.$$
 
-The best detector checkpoint maximizes $H$.
+The best detector checkpoint maximizes $$H$$.
 
 ## Model 2: SVTR_LCNet recognizer
 
@@ -120,30 +108,17 @@ MobileNetV1Enhance ×0.5 -> SVTR neck -> MultiHead(CTC + SAR)
 ```
 
 The CTC branch marginalizes all valid frame-to-label alignments. If
-$\mathcal{B}(\pi)=y$ collapses alignment $\pi$ to target $y$, then:
+$$\mathcal{B}(\pi)=y$$ collapses alignment $$\pi$$ to target $$y$$, then:
 
-```math
-\mathcal{L}_{CTC}
-=-\frac{1}{N}\sum_{n=1}^{N}
-\log\left(
-\sum_{\pi:\mathcal{B}(\pi)=y_n}
-\prod_{t=1}^{T}p(\pi_t\mid x_n)
-\right).
-```
+$$\mathcal{L}_{CTC} =-\frac{1}{N}\sum_{n=1}^{N} \log\left( \sum_{\pi:\mathcal{B}(\pi)=y_n} \prod_{t=1}^{T}p(\pi_t\mid x_n) \right).$$
 
 The SAR branch uses autoregressive cross-entropy:
 
-```math
-\mathcal{L}_{SAR}
-=-\frac{1}{M}\sum_{n,t}
-\log p\left(y_{n,t}\mid y_{n,<t},x_n\right).
-```
+$$\mathcal{L}_{SAR} =-\frac{1}{M}\sum_{n,t} \log p\left(y_{n,t}\mid y_{n,<t},x_n\right).$$
 
 The default `MultiLoss` weights are both one:
 
-```math
-\mathcal{L}_{rec}=\mathcal{L}_{CTC}+\mathcal{L}_{SAR}.
-```
+$$\mathcal{L}_{rec}=\mathcal{L}_{CTC}+\mathcal{L}_{SAR}.$$
 
 Deployment decodes the CTC head. Validation reports exact sequence accuracy
 and normalized edit similarity.
@@ -160,27 +135,13 @@ Images are resized with preserved aspect ratio, padded to `488 × 488`, and
 decoded autoregressively up to 500 structure tokens. The loss combines token
 cross-entropy and masked Smooth L1 localization:
 
-```math
-\mathcal{L}_{SLA}
-=\lambda_s\mathcal{L}_{structure}
-+\lambda_l\mathcal{L}_{location},
-\qquad \lambda_s=1,\;\lambda_l=2.
-```
+$$\mathcal{L}_{SLA} =\lambda_s**\mathcal**{L}_{structure} +\lambda_l**\mathcal**{L}_{location}, \qquad \lambda_s=1,\;\lambda_l=2.$$
 
-```math
-\mathcal{L}_{structure}
-=-\frac{1}{N}\sum_{n,t}\log p(y_{n,t}\mid y_{n,<t},x_n).
-```
+$$\mathcal{L}_{structure} =-\frac{1}{N}\sum_{n,t}\log p(y_{n,t}\mid y_{n,<t},x_n).$$
 
-For masked coordinate errors $d$:
+For masked coordinate errors $$d$$:
 
-```math
-\operatorname{SmoothL1}(d)=
-\begin{cases}
-\tfrac{1}{2}d^2, & |d|<1,\\
-|d|-\tfrac{1}{2}, & |d|\ge 1.
-\end{cases}
-```
+$$\operatorname{SmoothL1}(d)= \begin{cases} \tfrac{1}{2}d^2, & |d|<1,\\ |d|-\tfrac{1}{2}, & |d|\ge 1. \end{cases}$$
 
 The implementation normalizes the summed localization loss by the number of
 valid coordinate elements.
@@ -189,37 +150,19 @@ valid coordinate elements.
 
 Exact table accuracy is intentionally strict:
 
-```math
-\operatorname{Acc}_{exact}
-=\frac{1}{N}\sum_{n=1}^{N}
-\mathbf{1}[\widehat{s}_n=s_n].
-```
+$$\operatorname{Acc}_{exact} =\frac{1}{N}\sum_{n=1}^{N} \mathbf{1}[\widehat{s}_n=s_n].$$
 
 Normalized token edit similarity for one table is:
 
-```math
-\operatorname{NED}(\widehat{s},s)
-=1-\frac{D_{lev}(\widehat{s},s)}
-{\max(|\widehat{s}|,|s|,1)}.
-```
+$$\operatorname{NED}(\widehat{s},s) =1-\frac{D_{lev}(\widehat{s},s)} {\max(|\widehat{s}|,|s|,1)}.$$
 
 TEDS-Structure compares HTML trees while ignoring cell text:
 
-```math
-\operatorname{TEDS\text{-}S}(T_a,T_b)
-=1-\frac{\operatorname{EditDist}(T_a,T_b)}
-{\max(|T_a|,|T_b|)}.
-```
+$$\operatorname{TEDS**\text**{-}S}(T_a,T_b) =1-\frac{\operatorname{EditDist}(T_a,T_b)} {\max(|T_a|,|T_b|)}.$$
 
 The primary checkpoint score is:
 
-```math
-S_{structure}
-=0.2A_{token}
-+0.2\overline{\operatorname{NED}}
-+0.4\overline{\operatorname{TEDS\text{-}S}}
-+0.2R_{valid\_html}.
-```
+$$S_{structure} =0.2A_{token} +0.2**\overline**{\operatorname{NED}} +0.4**\overline**{\operatorname{TEDS**\text**{-}S}} +0.2R_{valid\_html}.$$
 
 This score favors correct topology and valid HTML without requiring every token
 in a long table to be exact. The selected checkpoint prefix is
@@ -227,24 +170,13 @@ in a long table to be exact. The selected checkpoint prefix is
 
 ## Optimization
 
-All three stages use Adam. For gradient $g_t$:
+All three stages use Adam. For gradient $$g_t$$:
 
-```math
-m_t=\beta_1m_{t-1}+(1-\beta_1)g_t,
-\qquad
-v_t=\beta_2v_{t-1}+(1-\beta_2)g_t^2,
-```
+$$m_t=\beta_1m_{t-1}+(1-\beta_1)g_t, \qquad v_t=\beta_2v_{t-1}+(1-\beta_2)g_t^2,$$
 
-```math
-\widehat{m}_t=\frac{m_t}{1-\beta_1^t},
-\qquad
-\widehat{v}_t=\frac{v_t}{1-\beta_2^t},
-```
+$$\widehat{m}_t=\frac{m_t}{1-\beta_1^t}, \qquad \widehat{v}_t=\frac{v_t}{1-\beta_2^t},$$
 
-```math
-\theta_{t+1}=\theta_t-\eta_t
-\frac{\widehat{m}_t}{\sqrt{\widehat{v}_t}+\epsilon}.
-```
+$$\theta_{t+1}=\theta_t-\eta_t \frac{\widehat{m}_t}{\sqrt{\widehat{v}_t}+\epsilon}.$$
 
 | Stage | Initial LR | Schedule | Batch/GPU | AMP |
 |---|---:|---|---:|---|
@@ -258,7 +190,7 @@ The deployment path is:
 
 ```text
 image bytes -> OpenCV decode -> ONNX Runtime sessions -> table matching
-            -> HTML -> tablepyxl -> XLSX
+            -> HTML -> tablepyxl -> XLSX
 ```
 
 The service loads each model once, validates tensor contracts, performs warm-up,
@@ -288,17 +220,17 @@ quality. Run the included benchmark on the target deployment hardware.
 ## Repository layout
 
 ```text
-deploy/                 FastAPI, Gradio, settings, service lifecycle
-infer/                  detection/recognition wrappers and ONNX Runtime setup
-models/dictionaries/    English OCR and table token dictionaries
-postprocess/             detector, recognizer, and table post-processing
-ppocr/                   lightweight inference operators
-scripts/                 data, training, export, validation, and benchmark tools
-table_metric/            TEDS implementation
-tablepyxl/               HTML-to-XLSX conversion
-tests/                   unit and integration-oriented tests
-training/configs/        project training configurations
-training/patches/        PaddleOCR release/2.7 project patch
+deploy/                 FastAPI, Gradio, settings, service lifecycle
+infer/                  detection/recognition wrappers and ONNX Runtime setup
+models/dictionaries/    English OCR and table token dictionaries
+postprocess/             detector, recognizer, and table post-processing
+ppocr/                   lightweight inference operators
+scripts/                 data, training, export, validation, and benchmark tools
+table_metric/            TEDS implementation
+tablepyxl/               HTML-to-XLSX conversion
+tests/                   unit and integration-oriented tests
+training/configs/        project training configurations
+training/patches/        PaddleOCR release/2.7 project patch
 ```
 
 PaddleOCR itself is restored from pinned commit
