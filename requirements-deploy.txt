@@ -1,0 +1,2 @@
+-r requirements-deploy-common.txt
+-r requirements-deploy-cpu.txt

@@ -1,0 +1,91 @@
+# Python environments and local runtimes
+.venv/
+.python312/
+.vendor/
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyd
+*.so
+*.dll
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Local configuration and credentials
+.env
+.env.*
+!.env.example
+.docker-config/
+.codex/
+AGENTS.md
+
+# IDE and operating-system metadata
+.vscode/
+.idea/
+*.code-workspace
+*.user
+*.suo
+*.swp
+*~
+.DS_Store
+Thumbs.db
+
+# Datasets, generated labels, crops and experiment outputs
+training/data/
+training/output/
+train_data/
+output/
+inference/
+inference_results/
+log/
+logs/
+*.log
+*.xlsx
+*.xls
+
+# PaddleOCR is restored from a pinned upstream commit and a tracked patch.
+training/PaddleOCR/
+
+# Model weights and generated manifests are distributed separately.
+models/**/*.onnx
+models/**/*.pdmodel
+models/**/*.pdiparams
+models/manifest*.json
+*.pdparams
+*.pdopt
+*.states
+*.pdmodel
+*.pdiparams
+*.onnx
+*.engine
+*.plan
+
+# Downloaded archives
+*.zip
+*.tar
+*.tar.gz
+*.tgz
+*.7z
+
+# Build and package artifacts
+build/
+dist/
+*.egg-info/
+
+# Local planning and legacy documentation superseded by the public READMEs.
+/*_PLAN.md
+/DEPLOYMENT.md
+/TRAINING.md
+/README_ch.md
+/docs/
+
+# Upstream demo caches
+/deploy/android_demo/app/OpenCV/
+/deploy/android_demo/app/PaddleLite/
+/deploy/android_demo/app/.cxx/
+/deploy/android_demo/app/cache/
+/test_tipc/web/models/
+/test_tipc/web/node_modules/

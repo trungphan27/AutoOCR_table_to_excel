@@ -1,0 +1,779 @@
+diff --git a/ppocr/metrics/table_metric.py b/ppocr/metrics/table_metric.py
+index c0b247e..f4168c4 100644
+--- a/ppocr/metrics/table_metric.py
++++ b/ppocr/metrics/table_metric.py
+@@ -12,6 +12,8 @@
+ # See the License for the specific language governing permissions and
+ # limitations under the License.
+ import numpy as np
++from rapidfuzz.distance import Levenshtein
++
+ from ppocr.metrics.det_metric import DetMetric
+ 
+ 
+@@ -20,51 +22,254 @@ class TableStructureMetric(object):
+                  main_indicator='acc',
+                  eps=1e-6,
+                  del_thead_tbody=False,
++                 compute_token_metrics=False,
++                 compute_teds_structure=False,
++                 show_progress_metrics=True,
++                 teds_n_jobs=1,
++                 structure_score_weights=None,
+                  **kwargs):
+         self.main_indicator = main_indicator
+         self.eps = eps
+         self.del_thead_tbody = del_thead_tbody
++        self.compute_token_metrics = compute_token_metrics
++        self.compute_teds_structure = compute_teds_structure
++        self.show_progress_metrics = show_progress_metrics
++        self.teds_n_jobs = teds_n_jobs
++        default_weights = {
++            'token_acc': 0.2,
++            'norm_edit_dis': 0.2,
++            'teds_structure': 0.4,
++            'valid_html_rate': 0.2,
++        }
++        self.structure_score_weights = dict(
++            default_weights if structure_score_weights is None else
++            structure_score_weights)
++        unknown_weights = set(self.structure_score_weights) - set(
++            default_weights)
++        if unknown_weights:
++            raise ValueError(
++                'Unsupported structure_score weight(s): {}'.format(
++                    sorted(unknown_weights)))
++        weight_sum = sum(self.structure_score_weights.values())
++        if any(weight < 0 for weight in self.structure_score_weights.values()) \
++                or weight_sum <= 0:
++            raise ValueError(
++                'structure_score_weights must be non-negative and sum to a '
++                'positive value')
++        self.structure_score_weights = {
++            key: value / weight_sum
++            for key, value in self.structure_score_weights.items()
++        }
++        self.teds = None
++        if self.compute_teds_structure:
++            try:
++                from ppstructure.table.table_metric.table_metric import TEDS
++            except ImportError as exc:
++                raise ImportError(
++                    'TEDS-Structure requires apted, lxml and rapidfuzz. '
++                    'Install the project training requirements inside .venv.'
++                ) from exc
++            self.teds = TEDS(structure_only=True, n_jobs=teds_n_jobs)
+         self.reset()
+ 
+-    def __call__(self, pred_label, batch=None, *args, **kwargs):
++    @staticmethod
++    def _remove_section_tokens(tokens):
++        ignored = {'<thead>', '</thead>', '<tbody>', '</tbody>'}
++        return [token for token in tokens if token not in ignored]
++
++    def _normalize_tokens(self, tokens):
++        normalized = list(tokens)
++        if self.del_thead_tbody:
++            normalized = self._remove_section_tokens(normalized)
++        return normalized
++
++    @staticmethod
++    def _tokens_to_html(tokens):
++        structure = ''.join(tokens).strip()
++        lower_structure = structure.lower()
++        if '<table' not in lower_structure:
++            structure = '<table>{}</table>'.format(structure)
++            lower_structure = structure.lower()
++        if '<body' not in lower_structure:
++            structure = '<body>{}</body>'.format(structure)
++            lower_structure = structure.lower()
++        if '<html' not in lower_structure:
++            structure = '<html>{}</html>'.format(structure)
++        return structure
++
++    @staticmethod
++    def _is_well_formed_html(html_text):
++        # Strict XML parsing rejects unbalanced PubTabNet structure tags.
++        from xml.etree import ElementTree
++        try:
++            root = ElementTree.fromstring(html_text)
++        except (ElementTree.ParseError, ValueError, TypeError):
++            return False
++        table = root.find('./body/table') if root.tag.lower() == 'html' else None
++        if table is None:
++            return False
++        for cell in table.iter('td'):
++            for attribute in ('rowspan', 'colspan'):
++                value = cell.attrib.get(attribute, '1')
++                try:
++                    if int(value) < 1:
++                        return False
++                except (TypeError, ValueError):
++                    return False
++        return True
++
++    @staticmethod
++    def _token_alignment_counts(pred_tokens, target_tokens):
++        if not pred_tokens and not target_tokens:
++            return 1, 1, 0
++        distance = Levenshtein.distance(pred_tokens, target_tokens)
++        matching_tokens = 0
++        for opcode in Levenshtein.opcodes(pred_tokens, target_tokens):
++            if opcode.tag == 'equal':
++                matching_tokens += opcode.src_end - opcode.src_start
++        alignment_columns = matching_tokens + distance
++        return matching_tokens, alignment_columns, distance
++
++    def _compute_teds_batch(self, pred_htmls, target_htmls):
++        if not pred_htmls:
++            return []
++        scores = [None] * len(pred_htmls)
++        pending_indices = []
++        pending_pred_htmls = []
++        pending_target_htmls = []
++        for index, (pred_html, target_html) in enumerate(
++                zip(pred_htmls, target_htmls)):
++            if pred_html == target_html:
++                scores[index] = 1.0
++            else:
++                pending_indices.append(index)
++                pending_pred_htmls.append(pred_html)
++                pending_target_htmls.append(target_html)
++        if not pending_indices:
++            return scores
++        try:
++            pending_scores = self.teds.batch_evaluate_html(
++                pending_pred_htmls, pending_target_htmls)
++        except Exception:
++            # Fall back to per-sample evaluation after a batch failure.
++            pending_scores = []
++            for pred_html, target_html in zip(pending_pred_htmls,
++                                               pending_target_htmls):
++                try:
++                    pending_scores.append(
++                        self.teds.evaluate(pred_html, target_html))
++                except Exception:
++                    pending_scores.append(0.0)
++        for index, score in zip(pending_indices, pending_scores):
++            try:
++                scores[index] = float(score)
++            except (TypeError, ValueError):
++                scores[index] = 0.0
++        return scores
++
++    def __call__(self,
++                 pred_label,
++                 batch=None,
++                 compute_teds=None,
++                 *args,
++                 **kwargs):
+         preds, labels = pred_label
+         pred_structure_batch_list = preds['structure_batch_list']
+         gt_structure_batch_list = labels['structure_batch_list']
+         correct_num = 0
+         all_num = 0
++        teds_enabled = self.compute_teds_structure and (
++            compute_teds is None or bool(compute_teds))
++        valid_pred_htmls = []
++        valid_target_htmls = []
+         for (pred, pred_conf), target in zip(pred_structure_batch_list,
+                                              gt_structure_batch_list):
+-            pred_str = ''.join(pred)
+-            target_str = ''.join(target)
+-            if self.del_thead_tbody:
+-                pred_str = pred_str.replace('<thead>', '').replace(
+-                    '</thead>', '').replace('<tbody>', '').replace('</tbody>',
+-                                                                   '')
+-                target_str = target_str.replace('<thead>', '').replace(
+-                    '</thead>', '').replace('<tbody>', '').replace('</tbody>',
+-                                                                   '')
++            pred_tokens = self._normalize_tokens(pred)
++            target_tokens = self._normalize_tokens(target)
++            pred_str = ''.join(pred_tokens)
++            target_str = ''.join(target_tokens)
+             if pred_str == target_str:
+                 correct_num += 1
++
++            if self.compute_token_metrics:
++                matches, columns, distance = self._token_alignment_counts(
++                    pred_tokens, target_tokens)
++                self.matching_token_num += matches
++                self.alignment_column_num += columns
++                max_length = max(len(pred_tokens), len(target_tokens), 1)
++                self.norm_edit_dis_sum += 1.0 - distance / max_length
++
++            if teds_enabled:
++                pred_html = self._tokens_to_html(pred_tokens)
++                target_html = self._tokens_to_html(target_tokens)
++                if not self._is_well_formed_html(pred_html):
++                    self.invalid_html_num += 1
++                    self.teds_sample_num += 1
++                elif not self._is_well_formed_html(target_html):
++                    # Invalid labels score zero without affecting prediction counts.
++                    self.teds_sample_num += 1
++                else:
++                    valid_pred_htmls.append(pred_html)
++                    valid_target_htmls.append(target_html)
+             all_num += 1
++
++        if teds_enabled:
++            scores = self._compute_teds_batch(valid_pred_htmls,
++                                               valid_target_htmls)
++            self.teds_structure_sum += sum(
++                min(1.0, max(0.0, float(score))) for score in scores)
++            self.teds_sample_num += len(scores)
+         self.correct_num += correct_num
+         self.all_num += all_num
+ 
++    def _collect_metrics(self):
++        metrics = {
++            'acc': 1.0 * self.correct_num / (self.all_num + self.eps)
++        }
++        if self.compute_token_metrics:
++            metrics['token_acc'] = (
++                1.0 * self.matching_token_num /
++                (self.alignment_column_num + self.eps))
++            metrics['norm_edit_dis'] = (
++                self.norm_edit_dis_sum / (self.all_num + self.eps))
++        if self.compute_teds_structure:
++            metrics['teds_structure'] = (
++                self.teds_structure_sum / (self.teds_sample_num + self.eps))
++            metrics['invalid_html'] = self.invalid_html_num
++            if self.teds_sample_num:
++                metrics['invalid_html_rate'] = (
++                    self.invalid_html_num /
++                    (self.teds_sample_num + self.eps))
++                metrics['valid_html_rate'] = (
++                    1.0 - metrics['invalid_html_rate'])
++            else:
++                metrics['invalid_html_rate'] = 0.0
++                metrics['valid_html_rate'] = 0.0
++        if self.compute_token_metrics and self.compute_teds_structure:
++            metrics['structure_score'] = sum(
++                self.structure_score_weights[key] * metrics[key]
++                for key in self.structure_score_weights)
++        return metrics
++
++    def get_progress_metrics(self):
++        if not self.show_progress_metrics:
++            return {}
++        return self._collect_metrics()
++
+     def get_metric(self):
+-        """
+-        return metrics {
+-                 'acc': 0,
+-            }
+-        """
+-        acc = 1.0 * self.correct_num / (self.all_num + self.eps)
++        metrics = self._collect_metrics()
+         self.reset()
+-        return {'acc': acc}
++        return metrics
+ 
+     def reset(self):
+         self.correct_num = 0
+         self.all_num = 0
+-        self.len_acc_num = 0
+-        self.token_nums = 0
+-        self.anys_dict = dict()
++        self.matching_token_num = 0
++        self.alignment_column_num = 0
++        self.norm_edit_dis_sum = 0.0
++        self.teds_structure_sum = 0.0
++        self.teds_sample_num = 0
++        self.invalid_html_num = 0
+ 
+ 
+ class TableMetric(object):
+@@ -73,6 +278,11 @@ class TableMetric(object):
+                  compute_bbox_metric=False,
+                  box_format='xyxy',
+                  del_thead_tbody=False,
++                 compute_token_metrics=False,
++                 compute_teds_structure=False,
++                 show_progress_metrics=True,
++                 teds_n_jobs=1,
++                 structure_score_weights=None,
+                  **kwargs):
+         """
+ 
+@@ -81,17 +291,35 @@ class TableMetric(object):
+         @param kwargs:
+         """
+         self.structure_metric = TableStructureMetric(
+-            del_thead_tbody=del_thead_tbody)
++            main_indicator=main_indicator,
++            del_thead_tbody=del_thead_tbody,
++            compute_token_metrics=compute_token_metrics,
++            compute_teds_structure=compute_teds_structure,
++            show_progress_metrics=show_progress_metrics,
++            teds_n_jobs=teds_n_jobs,
++            structure_score_weights=structure_score_weights)
+         self.bbox_metric = DetMetric() if compute_bbox_metric else None
+         self.main_indicator = main_indicator
++        if self.main_indicator == 'structure_score' and not (
++                compute_token_metrics and compute_teds_structure):
++            raise ValueError(
++                'main_indicator=structure_score requires '
++                'compute_token_metrics=True and '
++                'compute_teds_structure=True')
+         self.box_format = box_format
++        self.show_progress_metrics = show_progress_metrics
+         self.reset()
+ 
+     def __call__(self, pred_label, batch=None, *args, **kwargs):
+-        self.structure_metric(pred_label)
++        self.structure_metric(pred_label, batch, *args, **kwargs)
+         if self.bbox_metric is not None:
+             self.bbox_metric(*self.prepare_bbox_metric_input(pred_label))
+ 
++    def get_progress_metrics(self):
++        if not self.show_progress_metrics:
++            return {}
++        return self.structure_metric.get_progress_metrics()
++
+     def prepare_bbox_metric_input(self, pred_label):
+         pred_bbox_batch_list = []
+         gt_ignore_tags_batch_list = []
+diff --git a/ppocr/utils/save_load.py b/ppocr/utils/save_load.py
+index e6a81c4..eda7bd2 100644
+--- a/ppocr/utils/save_load.py
++++ b/ppocr/utils/save_load.py
+@@ -29,6 +29,22 @@ from ppocr.utils.network import maybe_download_params
+ __all__ = ['load_model']
+ 
+ 
++def _checkpoint_training_state(states_dict):
++    """Restore epoch/batch position while remaining compatible with old states."""
++    best_model_dict = dict(states_dict.get('best_model_dict', {}))
++    if 'global_step' in states_dict:
++        best_model_dict['global_step'] = states_dict['global_step']
++    if 'epoch' in states_dict:
++        checkpoint_epoch = states_dict['epoch']
++        if states_dict.get('epoch_completed', True):
++            best_model_dict['start_epoch'] = checkpoint_epoch + 1
++        else:
++            best_model_dict['start_epoch'] = checkpoint_epoch
++            best_model_dict['resume_step_in_epoch'] = states_dict.get(
++                'step_in_epoch', 0)
++    return best_model_dict
++
++
+ def _mkdir_if_not_exist(path, logger):
+     """
+     mkdir if not exists, ignore the exception when multiprocess mkdir together
+@@ -70,9 +86,7 @@ def load_model(config, model, optimizer=None, model_type='det'):
+                           'rb') as f:
+                     states_dict = pickle.load(f) if six.PY2 else pickle.load(
+                         f, encoding='latin1')
+-                best_model_dict = states_dict.get('best_model_dict', {})
+-                if 'epoch' in states_dict:
+-                    best_model_dict['start_epoch'] = states_dict['epoch'] + 1
++                best_model_dict = _checkpoint_training_state(states_dict)
+             logger.info("resume from {}".format(checkpoints))
+ 
+             if optimizer is not None:
+@@ -132,9 +146,7 @@ def load_model(config, model, optimizer=None, model_type='det'):
+             with open(checkpoints + '.states', 'rb') as f:
+                 states_dict = pickle.load(f) if six.PY2 else pickle.load(
+                     f, encoding='latin1')
+-            best_model_dict = states_dict.get('best_model_dict', {})
+-            if 'epoch' in states_dict:
+-                best_model_dict['start_epoch'] = states_dict['epoch'] + 1
++            best_model_dict = _checkpoint_training_state(states_dict)
+         logger.info("resume from {}".format(checkpoints))
+     elif pretrained_model:
+         is_float16 = load_pretrained_params(model, pretrained_model)
+@@ -198,12 +210,12 @@ def save_model(model,
+     _mkdir_if_not_exist(model_path, logger)
+     model_prefix = os.path.join(model_path, prefix)
+ 
+-    if prefix == 'best_accuracy':
++    if is_best:
+         best_model_path = os.path.join(model_path, 'best_model')
+         _mkdir_if_not_exist(best_model_path, logger)
+ 
+     paddle.save(optimizer.state_dict(), model_prefix + '.pdopt')
+-    if prefix == 'best_accuracy':
++    if is_best:
+         paddle.save(optimizer.state_dict(),
+                     os.path.join(best_model_path, 'model.pdopt'))
+ 
+@@ -213,7 +225,7 @@ def save_model(model,
+         paddle.save(model.state_dict(), model_prefix + '.pdparams')
+         metric_prefix = model_prefix
+ 
+-        if prefix == 'best_accuracy':
++        if is_best:
+             paddle.save(model.state_dict(),
+                         os.path.join(best_model_path, 'model.pdparams'))
+ 
+@@ -227,7 +239,7 @@ def save_model(model,
+         arch.backbone.model.save_pretrained(model_prefix)
+         metric_prefix = os.path.join(model_prefix, 'metric')
+ 
+-        if prefix == 'best_accuracy':
++        if is_best:
+             arch.backbone.model.save_pretrained(best_model_path)
+ 
+     # save metric and config
+diff --git a/tools/program.py b/tools/program.py
+index c543b7d..a8571cc 100755
+--- a/tools/program.py
++++ b/tools/program.py
+@@ -19,6 +19,7 @@ from __future__ import print_function
+ import os
+ import sys
+ import platform
++import signal
+ import yaml
+ import time
+ import datetime
+@@ -173,6 +174,36 @@ def to_float32(preds):
+     return preds
+ 
+ 
++def _validation_progress_postfix(metrics):
++    """Format structure metrics compactly enough for a tqdm terminal line."""
++    aliases = {
++        'structure_score': 'score',
++        'acc': 'acc',
++        'token_acc': 'token_acc',
++        'norm_edit_dis': 'ned',
++        'teds_structure': 'teds_s',
++    }
++    return {
++        alias: '{:.4f}'.format(float(metrics[key]))
++        for key, alias in aliases.items() if key in metrics
++    }
++
++
++def _latest_validation_postfix(metrics):
++    """Label cached validation values unambiguously on the training bar."""
++    aliases = {
++        'structure_score': 'val_score',
++        'acc': 'val_acc',
++        'token_acc': 'val_tok',
++        'norm_edit_dis': 'val_ned',
++        'teds_structure': 'val_teds',
++    }
++    return {
++        alias: '{:.4f}'.format(float(metrics[key]))
++        for key, alias in aliases.items() if key in metrics
++    }
++
++
+ def train(config,
+           train_dataloader,
+           valid_dataloader,
+@@ -198,13 +229,12 @@ def train(config,
+     log_smooth_window = config['Global']['log_smooth_window']
+     epoch_num = config['Global']['epoch_num']
+     print_batch_step = config['Global']['print_batch_step']
++    show_train_progress = config['Global'].get('show_train_progress', True)
+     eval_batch_step = config['Global']['eval_batch_step']
+     eval_batch_epoch = config['Global'].get('eval_batch_epoch', None)
+     profiler_options = config['profiler_options']
+ 
+-    global_step = 0
+-    if 'global_step' in pre_best_model_dict:
+-        global_step = pre_best_model_dict['global_step']
++    global_step = int(pre_best_model_dict.pop('global_step', 0))
+     start_eval_step = 0
+     if type(eval_batch_step) == list and len(eval_batch_step) >= 2:
+         start_eval_step = eval_batch_step[0] if not eval_batch_epoch else 0
+@@ -221,12 +251,18 @@ def train(config,
+             "an evaluation is run every {} iterations".
+             format(start_eval_step, eval_batch_step))
+     save_epoch_step = config['Global']['save_epoch_step']
++    save_batch_step = int(config['Global'].get('save_batch_step', 0))
+     save_model_dir = config['Global']['save_model_dir']
+     if not os.path.exists(save_model_dir):
+         os.makedirs(save_model_dir)
+     main_indicator = eval_class.main_indicator
++    best_model_prefix = config['Global'].get('best_model_prefix',
++                                             'best_accuracy')
++    restored_main_indicator = main_indicator in pre_best_model_dict
+     best_model_dict = {main_indicator: 0}
+     best_model_dict.update(pre_best_model_dict)
++    needs_best_metric_baseline = bool(
++        config['Global'].get('checkpoints')) and not restored_main_indicator
+     train_stats = TrainingStats(log_smooth_window, ['lr'])
+     model_average = False
+     model.train()
+@@ -250,14 +286,79 @@ def train(config,
+ 
+     algorithm = config['Architecture']['algorithm']
+ 
+-    start_epoch = best_model_dict[
+-        'start_epoch'] if 'start_epoch' in best_model_dict else 1
++    start_epoch = int(best_model_dict.pop('start_epoch', 1))
++    resume_step_in_epoch = int(
++        best_model_dict.pop('resume_step_in_epoch', 0))
++
++    stop_requested = False
++
++    def request_training_stop(sig_num, frame):
++        nonlocal stop_requested
++        if stop_requested:
++            raise KeyboardInterrupt
++        stop_requested = True
++        logger.warning(
++            'Stop requested. The current batch will finish and a resumable '
++            'checkpoint will be saved; press Ctrl+C again to force exit.')
++
++    try:
++        signal.signal(signal.SIGINT, request_training_stop)
++        if hasattr(signal, 'SIGBREAK'):
++            signal.signal(signal.SIGBREAK, request_training_stop)
++    except (ValueError, OSError):
++        logger.warning('Could not install graceful training stop handler.')
+ 
+     total_samples = 0
+     train_reader_cost = 0.0
+     train_batch_cost = 0.0
+     reader_start = time.time()
+     eta_meter = AverageMeter()
++    last_eval_metrics = {}
++
++    if needs_best_metric_baseline and dist.get_rank() == 0 \
++            and len(valid_dataloader) > 0:
++        logger.info(
++            'Checkpoint does not contain {}; running one validation pass to '
++            'initialize {}.'.format(main_indicator, best_model_prefix))
++        baseline_metric = eval(
++            model,
++            valid_dataloader,
++            post_process_class,
++            eval_class,
++            model_type,
++            extra_input=extra_input,
++            scaler=scaler,
++            amp_level=amp_level,
++            amp_custom_black_list=amp_custom_black_list,
++            amp_custom_white_list=amp_custom_white_list,
++            amp_dtype=amp_dtype)
++        best_model_dict.update(baseline_metric)
++        baseline_epoch = start_epoch if resume_step_in_epoch else max(
++            start_epoch - 1, 0)
++        best_model_dict['best_epoch'] = baseline_epoch
++        save_model(
++            model,
++            optimizer,
++            save_model_dir,
++            logger,
++            config,
++            is_best=True,
++            prefix=best_model_prefix,
++            best_model_dict=best_model_dict,
++            epoch=baseline_epoch,
++            global_step=global_step,
++            step_in_epoch=resume_step_in_epoch,
++            epoch_completed=resume_step_in_epoch == 0)
++        last_eval_metrics = {
++            key: baseline_metric[key]
++            for key in [
++                'acc', 'token_acc', 'norm_edit_dis', 'teds_structure',
++                'structure_score'
++            ] if key in baseline_metric
++        }
++        logger.info('initial best metric, {}'.format(', '.join([
++            '{}: {}'.format(k, v) for k, v in best_model_dict.items()
++        ])))
+ 
+     max_iter = len(train_dataloader) - 1 if platform.system(
+     ) == "Windows" else len(train_dataloader)
+@@ -269,7 +370,29 @@ def train(config,
+             max_iter = len(train_dataloader) - 1 if platform.system(
+             ) == "Windows" else len(train_dataloader)
+ 
++        train_progress = tqdm(
++            total=max_iter,
++            desc='train {} [{}/{}]'.format(algorithm, epoch, epoch_num),
++            unit='batch',
++            position=0,
++            leave=True,
++            dynamic_ncols=True,
++            mininterval=0.5,
++            ascii=True,
++            disable=not show_train_progress or dist.get_rank() != 0)
++
++        skip_steps = resume_step_in_epoch if epoch == start_epoch else 0
++        if skip_steps:
++            logger.info(
++                'resume epoch {} after {} completed batch(es)'.format(
++                    epoch, skip_steps))
++
+         for idx, batch in enumerate(train_dataloader):
++            if idx < skip_steps:
++                if dist.get_rank() == 0:
++                    train_progress.update(1)
++                reader_start = time.time()
++                continue
+             profiler.add_profiler_step(profiler_options)
+             train_reader_cost += time.time() - reader_start
+             if idx >= max_iter:
+@@ -321,7 +444,8 @@ def train(config,
+                     eval_class(preds, batch)
+                 elif model_type in ['table']:
+                     post_result = post_process_class(preds, batch)
+-                    eval_class(post_result, batch)
++                    # TEDS-S is computed during validation, not backpropagation.
++                    eval_class(post_result, batch, compute_teds=False)
+                 elif algorithm in ['CAN']:
+                     model_type = 'can'
+                     eval_class(preds[0], batch[2:], epoch_reset=(idx == 0))
+@@ -356,6 +480,21 @@ def train(config,
+             stats['lr'] = lr
+             train_stats.update(stats)
+ 
++            if dist.get_rank() == 0:
++                progress_stats = train_stats.get()
++                progress_postfix = {}
++                for key in ['loss', 'acc', 'hmean']:
++                    if key in progress_stats:
++                        progress_postfix[key] = '{:.4g}'.format(
++                            progress_stats[key])
++                progress_postfix['lr'] = '{:.3g}'.format(float(lr))
++                progress_postfix['samples/s'] = '{:.2f}'.format(
++                    len(images) / max(train_batch_time, 1e-9))
++                progress_postfix.update(
++                    _latest_validation_postfix(last_eval_metrics))
++                train_progress.set_postfix(progress_postfix, refresh=False)
++                train_progress.update(1)
++
+             if log_writer is not None and dist.get_rank() == 0:
+                 log_writer.log_metrics(
+                     metrics=train_stats.get(), prefix="TRAIN", step=global_step)
+@@ -376,15 +515,44 @@ def train(config,
+                     train_batch_cost / print_batch_step,
+                     total_samples / print_batch_step,
+                     total_samples / train_batch_cost, eta_sec_format)
++                if not train_progress.disable:
++                    train_progress.clear()
+                 logger.info(strs)
++                if not train_progress.disable:
++                    train_progress.refresh()
+ 
+                 total_samples = 0
+                 train_reader_cost = 0.0
+                 train_batch_cost = 0.0
++            checkpoint_due = save_batch_step > 0 and \
++                global_step % save_batch_step == 0
++            if dist.get_rank() == 0 and (checkpoint_due or stop_requested):
++                save_model(
++                    model,
++                    optimizer,
++                    save_model_dir,
++                    logger,
++                    config,
++                    is_best=False,
++                    prefix='latest_step',
++                    best_model_dict=best_model_dict,
++                    epoch=epoch,
++                    global_step=global_step,
++                    step_in_epoch=idx + 1,
++                    epoch_completed=False)
++            if stop_requested:
++                train_progress.close()
++                logger.info(
++                    'training stopped safely at epoch {}, batch {}, global '
++                    'step {}. Resume from latest_step.'.format(
++                        epoch, idx + 1, global_step))
++                return
+             # eval
+             if global_step > start_eval_step and \
+                     (global_step - start_eval_step) % eval_batch_step == 0 \
+                     and dist.get_rank() == 0:
++                if not train_progress.disable:
++                    train_progress.clear()
+                 if model_average:
+                     Model_Average = paddle.incubate.optimizer.ModelAverage(
+                         0.15,
+@@ -404,6 +572,19 @@ def train(config,
+                     amp_custom_black_list=amp_custom_black_list,
+                     amp_custom_white_list=amp_custom_white_list,
+                     amp_dtype=amp_dtype)
++                if getattr(eval_class, 'show_progress_metrics', True):
++                    last_eval_metrics = {
++                        key: cur_metric[key]
++                        for key in [
++                            'acc', 'token_acc', 'norm_edit_dis',
++                            'teds_structure', 'structure_score'
++                        ] if key in cur_metric
++                    }
++                else:
++                    last_eval_metrics = {}
++                progress_postfix.update(
++                    _latest_validation_postfix(last_eval_metrics))
++                train_progress.set_postfix(progress_postfix, refresh=False)
+                 cur_metric_str = 'cur metric, {}'.format(', '.join(
+                     ['{}: {}'.format(k, v) for k, v in cur_metric.items()]))
+                 logger.info(cur_metric_str)
+@@ -424,10 +605,12 @@ def train(config,
+                         logger,
+                         config,
+                         is_best=True,
+-                        prefix='best_accuracy',
++                        prefix=best_model_prefix,
+                         best_model_dict=best_model_dict,
+                         epoch=epoch,
+-                        global_step=global_step)
++                        global_step=global_step,
++                        step_in_epoch=idx + 1,
++                        epoch_completed=False)
+                 best_str = 'best metric, {}'.format(', '.join([
+                     '{}: {}'.format(k, v) for k, v in best_model_dict.items()
+                 ]))
+@@ -444,10 +627,14 @@ def train(config,
+ 
+                     log_writer.log_model(
+                         is_best=True,
+-                        prefix="best_accuracy",
++                        prefix=best_model_prefix,
+                         metadata=best_model_dict)
+ 
++                if not train_progress.disable:
++                    train_progress.refresh()
++
+             reader_start = time.time()
++        train_progress.close()
+         if dist.get_rank() == 0:
+             save_model(
+                 model,
+@@ -459,7 +646,9 @@ def train(config,
+                 prefix='latest',
+                 best_model_dict=best_model_dict,
+                 epoch=epoch,
+-                global_step=global_step)
++                global_step=global_step,
++                step_in_epoch=0,
++                epoch_completed=True)
+ 
+             if log_writer is not None:
+                 log_writer.log_model(is_best=False, prefix="latest")
+@@ -475,7 +664,9 @@ def train(config,
+                 prefix='iter_epoch_{}'.format(epoch),
+                 best_model_dict=best_model_dict,
+                 epoch=epoch,
+-                global_step=global_step)
++                global_step=global_step,
++                step_in_epoch=0,
++                epoch_completed=True)
+             if log_writer is not None:
+                 log_writer.log_model(
+                     is_best=False, prefix='iter_epoch_{}'.format(epoch))
+@@ -573,6 +764,12 @@ def eval(model,
+                 post_result = post_process_class(preds, batch_numpy[1])
+                 eval_class(post_result, batch_numpy)
+ 
++            if hasattr(eval_class, 'get_progress_metrics'):
++                progress_metrics = eval_class.get_progress_metrics()
++                progress_postfix = _validation_progress_postfix(
++                    progress_metrics)
++                if progress_postfix:
++                    pbar.set_postfix(progress_postfix, refresh=False)
+             pbar.update(1)
+             total_frame += len(images)
+             sum_images += 1

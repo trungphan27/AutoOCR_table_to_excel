@@ -1,0 +1,2 @@
+# PyPI builds in this range use CUDA 12.8 and cuDNN 9.
+onnxruntime-gpu==1.26.0

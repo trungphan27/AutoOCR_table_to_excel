@@ -1,0 +1,8 @@
+# Training dependencies for PaddleOCR release/2.7 on Python 3.12.
+# Install paddlepaddle-gpu==2.6.2 separately from the official CUDA index.
+-r requirements.txt
+scikit-image==0.26.0
+imgaug==0.4.0
+lmdb==2.3.0
+visualdl==2.5.3
+PyYAML==6.0.3

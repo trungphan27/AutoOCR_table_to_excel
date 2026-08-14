@@ -1,0 +1,69 @@
+name: ocr-table-to-excel
+
+x-app-common: &app-common
+  env_file:
+    - .env
+  ports:
+    - "8000:8000"
+  volumes:
+    - ./models:/app/models:ro
+    - ./output/deploy:/app/output/deploy
+  restart: unless-stopped
+  init: true
+  read_only: true
+  tmpfs:
+    - /tmp:size=1g
+
+services:
+  ocr-cpu:
+    <<: *app-common
+    profiles: ["cpu"]
+    build:
+      context: .
+      target: cpu
+    image: ocr-table-to-excel:cpu
+    environment:
+      OCR_ONNX_PROVIDERS: CPUExecutionProvider
+
+  ocr-gpu:
+    <<: *app-common
+    profiles: ["gpu"]
+    build:
+      context: .
+      target: gpu
+    image: ocr-table-to-excel:gpu
+    gpus: all
+    environment:
+      OCR_ONNX_PROVIDERS: CUDAExecutionProvider,CPUExecutionProvider
+
+  # Hybrid execution keeps the convolutional stages on CUDA and avoids GPU
+  # launch overhead in the autoregressive SLANet decoder.
+  ocr-gpu-hybrid:
+    <<: *app-common
+    profiles: ["gpu-hybrid"]
+    build:
+      context: .
+      target: gpu
+    image: ocr-table-to-excel:gpu
+    gpus: all
+    environment:
+      OCR_ONNX_PROVIDERS: CUDAExecutionProvider,CPUExecutionProvider
+      OCR_DET_ONNX_PROVIDERS: CUDAExecutionProvider,CPUExecutionProvider
+      OCR_REC_ONNX_PROVIDERS: CUDAExecutionProvider,CPUExecutionProvider
+      OCR_TABLE_ONNX_PROVIDERS: CPUExecutionProvider
+
+  # Experimental mixed precision. DB remains FP32 because its FP16 output did
+  # not satisfy the detector parity threshold.
+  ocr-gpu-mixed:
+    <<: *app-common
+    profiles: ["gpu-mixed"]
+    build:
+      context: .
+      target: gpu
+    image: ocr-table-to-excel:gpu
+    gpus: all
+    environment:
+      OCR_ONNX_PROVIDERS: CUDAExecutionProvider,CPUExecutionProvider
+      OCR_DET_MODEL: ./models/det/model_fp32.onnx
+      OCR_REC_MODEL: ./models/rec/model_fp16.onnx
+      OCR_TABLE_MODEL: ./models/table/model_fp16.onnx

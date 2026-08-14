@@ -1,0 +1,137 @@
+Global:
+  debug: false
+  use_gpu: true
+  epoch_num: 100
+  log_smooth_window: 20
+  print_batch_step: 20
+  show_train_progress: true
+  save_model_dir: ../output/pubtabnet_det
+  save_epoch_step: 5
+  save_batch_step: 500
+  eval_batch_step: [0, 2000]
+  cal_metric_during_train: false
+  pretrained_model: https://paddleocr.bj.bcebos.com/pretrained/MobileNetV3_large_x0_5_pretrained.pdparams
+  checkpoints:
+  save_inference_dir: ../output/pubtabnet_det/inference
+  use_visualdl: false
+  infer_img: ../data/pubtabnet/val
+  save_res_path: ../output/pubtabnet_det/predicts.txt
+  distributed: false
+
+Architecture:
+  model_type: det
+  algorithm: DB
+  Transform:
+  Backbone:
+    name: MobileNetV3
+    scale: 0.5
+    model_name: large
+    disable_se: true
+  Neck:
+    name: RSEFPN
+    out_channels: 96
+    shortcut: true
+  Head:
+    name: DBHead
+    k: 50
+
+Loss:
+  name: DBLoss
+  balance_loss: true
+  main_loss_type: DiceLoss
+  alpha: 5
+  beta: 10
+  ohem_ratio: 3
+
+Optimizer:
+  name: Adam
+  beta1: 0.9
+  beta2: 0.999
+  lr:
+    name: Cosine
+    learning_rate: 0.001
+    warmup_epoch: 2
+  regularizer:
+    name: L2
+    factor: 0.00005
+
+PostProcess:
+  name: DBPostProcess
+  thresh: 0.3
+  box_thresh: 0.6
+  max_candidates: 1000
+  unclip_ratio: 1.5
+
+Metric:
+  name: DetMetric
+  main_indicator: hmean
+
+Train:
+  dataset:
+    name: SimpleDataSet
+    data_dir: ../data/pubtabnet
+    label_file_list: [../data/pubtabnet/derived/det_train.txt]
+    ratio_list: [1.0]
+    transforms:
+      - DecodeImage:
+          img_mode: BGR
+          channel_first: false
+      - DetLabelEncode:
+      - IaaAugment:
+          augmenter_args:
+            - {type: Fliplr, args: {p: 0.5}}
+            - {type: Affine, args: {rotate: [-5, 5]}}
+            - {type: Resize, args: {size: [0.7, 1.5]}}
+      - EastRandomCropData:
+          size: [960, 960]
+          max_tries: 50
+          keep_ratio: true
+      - MakeBorderMap:
+          shrink_ratio: 0.4
+          thresh_min: 0.3
+          thresh_max: 0.7
+      - MakeShrinkMap:
+          shrink_ratio: 0.4
+          min_text_size: 8
+      - NormalizeImage:
+          scale: 1./255.
+          mean: [0.485, 0.456, 0.406]
+          std: [0.229, 0.224, 0.225]
+          order: hwc
+      - ToCHWImage:
+      - KeepKeys:
+          keep_keys: [image, threshold_map, threshold_mask, shrink_map, shrink_mask]
+  loader:
+    shuffle: true
+    drop_last: false
+    batch_size_per_card: 4
+    num_workers: 2
+    use_shared_memory: false
+
+Eval:
+  dataset:
+    name: SimpleDataSet
+    data_dir: ../data/pubtabnet
+    label_file_list: [../data/pubtabnet/derived/det_val.txt]
+    transforms:
+      - DecodeImage:
+          img_mode: BGR
+          channel_first: false
+      - DetLabelEncode:
+      - DetResizeForTest:
+          limit_side_len: 736
+          limit_type: min
+      - NormalizeImage:
+          scale: 1./255.
+          mean: [0.485, 0.456, 0.406]
+          std: [0.229, 0.224, 0.225]
+          order: hwc
+      - ToCHWImage:
+      - KeepKeys:
+          keep_keys: [image, shape, polys, ignore_tags]
+  loader:
+    shuffle: false
+    drop_last: false
+    batch_size_per_card: 1
+    num_workers: 1
+    use_shared_memory: false

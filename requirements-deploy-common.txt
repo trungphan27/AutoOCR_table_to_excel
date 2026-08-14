@@ -1,0 +1,12 @@
+rapidfuzz==3.14.5
+openpyxl==3.1.5
+premailer==3.10.0
+lxml==5.2.0
+shapely==2.1.2
+numpy==1.26.4
+opencv-python-headless==4.10.0.84
+pyclipper==1.4.0
+fastapi==0.141.1
+uvicorn[standard]==0.52.1
+python-multipart==0.0.32
+gradio==6.22.0

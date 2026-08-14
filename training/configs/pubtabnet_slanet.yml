@@ -1,0 +1,156 @@
+Global:
+  use_gpu: true
+  epoch_num: 100
+  log_smooth_window: 20
+  print_batch_step: 20
+  show_train_progress: true
+  save_model_dir: ../output/pubtabnet_slanet
+  best_model_prefix: best_structure_score
+  save_epoch_step: 5
+  save_batch_step: 500
+  eval_batch_step: [0, 1000]
+  # Structure similarity metrics, especially TEDS-S, are validation-only.
+  cal_metric_during_train: false
+  pretrained_model:
+  checkpoints:
+  save_inference_dir: ../output/pubtabnet_slanet/inference
+  use_visualdl: false
+  infer_img: ../data/pubtabnet/val
+  character_dict_path: ppocr/utils/dict/table_structure_dict.txt
+  character_type: en
+  max_text_length: &max_text_length 500
+  box_format: &box_format xyxy
+  infer_mode: false
+  use_sync_bn: false
+  save_res_path: ../output/pubtabnet_slanet/predicts.txt
+  d2s_train_image_shape: [3, -1, -1]
+  amp_custom_white_list: [concat, elementwise_sub, set_value]
+
+Optimizer:
+  name: Adam
+  beta1: 0.9
+  beta2: 0.999
+  clip_norm: 5.0
+  lr:
+    name: Piecewise
+    learning_rate: 0.001
+    decay_epochs: [40, 50]
+    values: [0.001, 0.0001, 0.00005]
+  regularizer:
+    name: L2
+    factor: 0.0
+
+Architecture:
+  model_type: table
+  algorithm: SLANet
+  Backbone:
+    name: PPLCNet
+    scale: 1.0
+    pretrained: true
+    use_ssld: true
+  Neck:
+    name: CSPPAN
+    out_channels: 96
+  Head:
+    name: SLAHead
+    hidden_size: 256
+    max_text_length: *max_text_length
+    loc_reg_num: &loc_reg_num 4
+
+Loss:
+  name: SLALoss
+  structure_weight: 1.0
+  loc_weight: 2.0
+  loc_loss: smooth_l1
+
+PostProcess:
+  name: TableLabelDecode
+  merge_no_span_structure: &merge_no_span_structure true
+
+Metric:
+  name: TableMetric
+  main_indicator: structure_score
+  compute_bbox_metric: false
+  compute_token_metrics: true
+  compute_teds_structure: true
+  show_progress_metrics: true
+  teds_n_jobs: 1
+  structure_score_weights:
+    token_acc: 0.2
+    norm_edit_dis: 0.2
+    teds_structure: 0.4
+    valid_html_rate: 0.2
+  loc_reg_num: *loc_reg_num
+  box_format: *box_format
+
+Train:
+  dataset:
+    name: PubTabDataSet
+    data_dir: ../data/pubtabnet/train
+    label_file_list: [../data/pubtabnet/PubTabNet_2.0.0_train.jsonl]
+    transforms:
+      - DecodeImage:
+          img_mode: BGR
+          channel_first: false
+      - TableLabelEncode:
+          learn_empty_box: false
+          merge_no_span_structure: *merge_no_span_structure
+          replace_empty_cell_token: false
+          loc_reg_num: *loc_reg_num
+          max_text_length: *max_text_length
+      - TableBoxEncode:
+          in_box_format: *box_format
+          out_box_format: *box_format
+      - ResizeTableImage:
+          max_len: 488
+      - NormalizeImage:
+          scale: 1./255.
+          mean: [0.485, 0.456, 0.406]
+          std: [0.229, 0.224, 0.225]
+          order: hwc
+      - PaddingTableImage:
+          size: [488, 488]
+      - ToCHWImage:
+      - KeepKeys:
+          keep_keys: [image, structure, bboxes, bbox_masks, shape]
+  loader:
+    shuffle: true
+    batch_size_per_card: 8
+    drop_last: true
+    num_workers: 2
+
+Eval:
+  dataset:
+    name: PubTabDataSet
+    data_dir: ../data/pubtabnet/val
+    label_file_list: [../data/pubtabnet/PubTabNet_2.0.0_val.jsonl]
+    transforms:
+      - DecodeImage:
+          img_mode: BGR
+          channel_first: false
+      - TableLabelEncode:
+          learn_empty_box: false
+          merge_no_span_structure: *merge_no_span_structure
+          replace_empty_cell_token: false
+          loc_reg_num: *loc_reg_num
+          max_text_length: *max_text_length
+      - TableBoxEncode:
+          in_box_format: *box_format
+          out_box_format: *box_format
+      - ResizeTableImage:
+          max_len: 488
+      - NormalizeImage:
+          scale: 1./255.
+          mean: [0.485, 0.456, 0.406]
+          std: [0.229, 0.224, 0.225]
+          order: hwc
+      - PaddingTableImage:
+          size: [488, 488]
+      - ToCHWImage:
+      - KeepKeys:
+          keep_keys: [image, structure, bboxes, bbox_masks, shape]
+  loader:
+    shuffle: false
+    drop_last: false
+    batch_size_per_card: 8
+    num_workers: 2

@@ -1,0 +1,16 @@
+# Legacy Paddle/PP-Structure dependencies for the project Python 3.12 venv.
+# PaddlePaddle is intentionally not listed here because CPU/GPU wheels use
+# different package indexes. Install exactly one build as documented in README.
+rapidfuzz
+openpyxl
+premailer
+lxml==5.2.0
+shapely
+numpy==1.26.4
+protobuf==3.20.2
+opencv-python==4.6.0.66
+cython
+tqdm
+six
+pyclipper
+apted
