@@ -5,6 +5,7 @@ text regions, recognizes cell content, reconstructs table structure, merges
 text with cells, and exports both HTML and Excel.
 
 [End-to-end setup and commands](README_END_TO_END.md) ·
+[Docker deployment guide (Vietnamese)](README_DOCKER.md) ·
 [Download pretrained deployment models](https://drive.google.com/drive/folders/1JH42pMtsKQ1tRaoEezmb3kAaKzxIAAwf?usp=drive_link) ·
 [PaddleOCR](https://github.com/PaddlePaddle/PaddleOCR) ·
 [PubTabNet](https://github.com/ibm-aur-nlp/PubTabNet)
