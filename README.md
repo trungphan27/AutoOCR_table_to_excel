@@ -47,11 +47,11 @@ is converted to an `.xlsx` workbook.
 
 The training pipeline uses English **PubTabNet 2.0.0**, which provides table
 images, tokenized HTML structures, cell text, and bounding boxes for non-empty
-cells. The public corpus contains more than 500,000 tables; this repository's
+cells. This repository's
 reproducible training recipe uses:
 
 | Stage | Training subset | Validation subset |
-|---|---:|---:|
+| --- | ---: | ---: |
 | DB detector | 30,000 table images | 1,000 table images |
 | SVTR_LCNet recognizer | 400,000 cell crops | all crops from the sampled validation tables |
 | SLANet | the same 30,000 table images | the same 1,000 table images |
@@ -180,7 +180,7 @@ $$\widehat{m}_t=\frac{m_t}{1-\beta_1^t}, \qquad \widehat{v}_t=\frac{v_t}{1-\beta
 $$\theta_{t+1}=\theta_t-\eta_t \frac{\widehat{m}_t}{\sqrt{\widehat{v}_t}+\epsilon}.$$
 
 | Stage | Initial LR | Schedule | Batch/GPU | AMP |
-|---|---:|---|---:|---|
+| --- | ---: | --- | ---: | --- |
 | DB | `1e-3` | cosine, 2-epoch warm-up | 4 | off |
 | SVTR_LCNet | `1e-3` | cosine, 1-epoch warm-up | 128 | O1 |
 | SLANet | `1e-3` | piecewise | 8 | configurable |
@@ -210,7 +210,7 @@ On the local RTX 4060 8 GB test host, ten repeated requests for one validation
 image produced the following engineering smoke benchmark:
 
 | Profile | Mean latency | Median | P95 |
-|---|---:|---:|---:|
+| --- | ---: | ---: | ---: |
 | CPU FP32 | 1.724 s | — | 1.917 s |
 | all-CUDA FP32 | 1.537 s | 1.482 s | 1.843 s |
 | GPU hybrid FP32 | **0.610 s** | **0.586 s** | **0.648 s** |
